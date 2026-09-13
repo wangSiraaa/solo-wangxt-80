@@ -1,0 +1,153 @@
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+body {
+  font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color: #1d2939;
+  background: #f2f4f7;
+}
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: #101828;
+  color: #fff;
+  flex: none;
+}
+.brand {
+  font-weight: 700;
+  font-size: 15px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.logo {
+  color: #6aa6ff;
+}
+.subtitle {
+  font-size: 11px;
+  font-weight: 400;
+  color: #98a2b3;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.examples {
+  font-size: 12px;
+  color: #d0d5dd;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.examples select,
+.tbtn {
+  font-size: 12px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  border: 1px solid #344054;
+  background: #1d2939;
+  color: #e4e7ec;
+  cursor: pointer;
+}
+.tbtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.tbtn:not(:disabled):hover {
+  background: #2b3a4f;
+}
+.sep {
+  width: 1px;
+  height: 18px;
+  background: #344054;
+  margin: 0 3px;
+}
+.main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.sidebar {
+  width: 310px;
+  flex: none;
+  background: #fff;
+  border-right: 1px solid #e4e7ec;
+  overflow-y: auto;
+}
+.example-desc {
+  padding: 12px 14px 4px;
+  font-size: 11px;
+  color: #667085;
+  line-height: 1.5;
+}
+.example-desc strong {
+  font-size: 13px;
+  color: #1d2939;
+  display: block;
+  margin-bottom: 3px;
+}
+.views {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  gap: 10px;
+  padding: 10px;
+}
+.view {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.08);
+}
+.pane-title {
+  flex: none;
+  font-size: 12px;
+  color: #667085;
+  padding: 7px 12px;
+  border-bottom: 1px solid #eef0f3;
+  background: #fafbfc;
+}
+.pane2d > div:last-child,
+.pane3d > div:last-child {
+  flex: 1;
+  min-height: 0;
+}
+.load-error {
+  margin: 10px 14px;
+  padding: 8px 10px;
+  border-left: 3px solid #d92d20;
+  background: #fef3f2;
+  font-size: 11px;
+  color: #b42318;
+}
+.load-error p,
+.load-warn p {
+  margin: 3px 0;
+  line-height: 1.5;
+}
+.load-warn {
+  margin: 10px 14px;
+  padding: 8px 10px;
+  border-left: 3px solid #f79009;
+  background: #fffaeb;
+  font-size: 11px;
+  color: #b54708;
+}
