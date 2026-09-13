@@ -65,6 +65,8 @@ export interface FoldResult {
   faceTriangles: number[][][];
   closureGaps: ClosureGap[];
   intersections: IntersectingPair[];
+  /** 近共面接触候选面片对（零厚度表面距离 ≤ 阈值，非穿透） */
+  contacts: ContactPair[];
   /** 求解后自动边的角度（与输入顺序对应） */
   solvedAngles: Record<number, number>;
   converged: boolean;
@@ -73,4 +75,23 @@ export interface FoldResult {
   issues: FoldIssue[];
   /** 结构上是否为一整张相连纸片（加载时一次性判定） */
   connected: boolean;
+}
+
+export interface ContactPair {
+  faceA: number;
+  faceB: number;
+  /** 两面片间的最小距离 */
+  distance: number;
+}
+
+/**
+ * 一次完整的折角构型：每条边的“有向折叠角”（M 正 V 负），
+ * 以及该构型中由求解器决定的自动边集合。运动路径只生成/保存构型，
+ * 不触碰工程源折痕的 assignment / 默认角度。
+ */
+export interface FoldConfiguration {
+  /** 长度等于边数，弧度，有向 */
+  signedAngles: number[];
+  /** 求解器负责的自动边 */
+  autoEdges: number[];
 }

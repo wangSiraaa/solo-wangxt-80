@@ -33,6 +33,7 @@
         </section>
         <CreaseInspector :store="store" />
         <Diagnostics :store="store" />
+        <PathPanel :store="store" />
         <ProjectsPanel :store="store" />
         <section v-if="store.loadError" class="load-error">
           <strong>载入失败</strong>
@@ -64,6 +65,7 @@ import Fold2dView from './components/Fold2dView.vue';
 import Viewer3d from './components/Viewer3d.vue';
 import CreaseInspector from './components/CreaseInspector.vue';
 import Diagnostics from './components/Diagnostics.vue';
+import PathPanel from './components/PathPanel.vue';
 import ProjectsPanel from './components/ProjectsPanel.vue';
 import { useOrigamiStore } from './store/useOrigami';
 import { examples } from './fold/examples';

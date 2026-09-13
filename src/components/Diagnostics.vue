@@ -44,6 +44,17 @@
           面 #{{ p.faceA }} ↔ 面 #{{ p.faceB }}
         </button>
       </div>
+      <div v-if="(result.contacts?.length ?? 0) > 0" class="gaps">
+        <div class="sub">近共面 / 接触候选（无厚度表面距离，点击定位；不代表穿透）</div>
+        <button
+          v-for="(c, i) in result.contacts.slice(0, 6)"
+          :key="'c' + i"
+          class="contact"
+          @click="store.select('face', c.faceA)"
+        >
+          面 #{{ c.faceA }}↔#{{ c.faceB }}：{{ c.distance.toExponential(1) }}
+        </button>
+      </div>
     </template>
     <p v-else class="ok">载入折痕图后显示约束求解结果。</p>
   </div>
@@ -173,5 +184,16 @@ h3 {
   border-color: #f0a8a3;
   color: #b42318;
   background: #fef3f2;
+}
+.contact {
+  display: inline-block;
+  margin: 0 5px 5px 0;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  border: 1px solid #b8cfe8;
+  color: #1d4e89;
+  background: #f0f6ff;
+  cursor: pointer;
 }
 </style>

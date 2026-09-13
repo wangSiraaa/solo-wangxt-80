@@ -1,16 +1,33 @@
-/** 小规模约束求解：自动折痕角度未知，以非树折痕共享边两端闭合误差为残差，
+/** 小规模约束求解：自动折痕角度未知，以非树、非自动折痕共享边两端闭合误差为残差，
  *  使用 Levenberg–Marquardt（阻尼最小二乘）求解，前向差分提供雅可比。
- *  残差规模通常只有 1~2 个闭合点对，故由 mathjs 直接做稠密线性代数。 */
+ *  自动边被生成树优先放在闭环位置（见 fold.ts），其角度不参与传播而由残差反解；
+ *  运动延续时传入上一可靠步的解作为热启动，从而跟踪同一运动分支。 */
 
 import { lusolve, squeeze, type Matrix } from 'mathjs';
 import type { FoldGraph } from './types';
-import { propagate } from './fold';
+import { isTraversable, propagate } from './fold';
+
+/** 自动边允许的有向角范围：山折 M ≥ 0、谷折 V ≤ 0，F/U 不限。 */
+export function boundsForEdge(graph: FoldGraph, e: number): [number, number] {
+  const lim = Math.PI - 1e-3;
+  switch (graph.creases[e].assignment) {
+    case 'M': return [0, lim];
+    case 'V': return [-lim, 0];
+    default: return [-lim, lim];
+  }
+}
 
 export interface SolveOptions {
-  /** 起始猜测（有向角），不提供时用 crease.angle 推断 */
+  /** 未知量（自动边）的起始猜测；延续求解时传上一步的解 */
   initial?: number[];
   maxIter?: number;
   tol?: number;
+  /** 只做很少迭代的收紧步（延续中使用） */
+  fast?: boolean;
+  /** 软正则：把未知量拉向 nominal（对应延拓的预测值），用于欠约束机构
+   *  选择最小范数分支、抑制零空间内的数值跳变。 */
+  nominal?: number[];
+  regWeight?: number;
 }
 
 export interface SolveResult {
@@ -18,6 +35,8 @@ export interface SolveResult {
   angles: number[];
   residual: number;
   iterations: number;
+  /** 实际参与残差的闭环边索引 */
+  closureEdges: number[];
 }
 
 /** 一次完整求解。signedAngles 为全部边的有向角初值；autoEdges 为待求边索引。 */
@@ -27,46 +46,71 @@ export function solveAutoAngles(
   autoEdges: number[],
   options: SolveOptions = {},
 ): SolveResult {
-  const maxIter = options.maxIter ?? 60;
+  const maxIter = options.maxIter ?? (options.fast ? 20 : 60);
   const tol = options.tol ?? 5e-4;
 
-  if (autoEdges.length === 0) {
-    const base = propagate(graph, signedAngles);
-    const residual = maxGap(base.closureGaps);
-    return { converged: residual <= tol, angles: signedAngles.slice(), residual, iterations: 0 };
-  }
+  // 初始未知量（来自热启动或当前折痕角），残差与闭环边均以“未知量填入后、
+  // 全部折痕上树”的传播为准，这样自动角落在闭环边时也有正确的几何反馈。
+  let x = autoEdges.map((e, i) => {
+    const raw = options.initial ? options.initial[i] : signedAngles[e];
+    const [lo, hi] = boundsForEdge(graph, e);
+    return Math.min(hi, Math.max(lo, raw));
+  });
+  const bounds = autoEdges.map((e) => boundsForEdge(graph, e));
 
-  // 收集闭合约束：每个非树折痕边两个端点，每端 3 个坐标差
-  const probe = propagate(graph, signedAngles);
-  const closureEdges = probe.closureGaps.map((g) => g.edge);
-  if (closureEdges.length === 0) {
-    // 没有回边可约束（例如结构是树）——自动角无意义，按给定值直接返回
-    return { converged: true, angles: signedAngles.slice(), residual: 0, iterations: 0 };
-  }
-
-  const x0 = autoEdges.map((e, i) =>
-    options.initial ? options.initial[i] : signedAngles[e],
-  );
-
-  const evaluate = (x: number[]): number[] => {
+  const fillAngles = (unknowns: number[]): number[] => {
     const angles = signedAngles.slice();
     autoEdges.forEach((e, i) => {
-      angles[e] = x[i];
+      angles[e] = unknowns[i];
     });
-    const res = propagate(graph, angles);
-    return closureResiduals(graph, res, closureEdges);
+    return angles;
   };
 
-  let x = x0.slice();
+  const closureEdges = propagate(graph, fillAngles(x))
+    .closureGaps.map((g) => g.edge)
+    .filter((e) => isTraversable(graph.creases[e].assignment));
+
+  if (autoEdges.length === 0 || closureEdges.length === 0) {
+    // 无未知量，或没有闭环可约束（纯树结构）：用全部折痕树评估闭合质量
+    const base = propagate(graph, signedAngles);
+    const residual = maxGap(base.closureGaps);
+    return {
+      converged: residual <= tol,
+      angles: signedAngles.slice(),
+      residual,
+      iterations: 0,
+      closureEdges: base.closureGaps.map((g) => g.edge),
+    };
+  }
+
+  const regWeight = options.regWeight ?? 0;
+  const nominal = options.nominal ?? x.slice();
+
+  /** 完整最小二乘残差：几何闭合 + 零空间正则（拉向名义预测值）。 */
+  const evaluate = (unknowns: number[]): number[] => {
+    const res = propagate(graph, fillAngles(unknowns));
+    const closure = closureResiduals(graph, res, closureEdges);
+    if (regWeight > 0) {
+      for (let i = 0; i < unknowns.length; i++) {
+        closure.push(regWeight * (unknowns[i] - nominal[i]));
+      }
+    }
+    return closure;
+  };
+
+  /** 只含几何闭合残差的范数，用于收敛判定与对外报告。 */
+  const closureNorm = (unknowns: number[]): number => {
+    const res = propagate(graph, fillAngles(unknowns));
+    return norm(closureResiduals(graph, res, closureEdges));
+  };
+
   let r = evaluate(x);
-  let residualNorm = norm(r);
+  let residualNorm = closureNorm(x);
   let lambda = 1e-3;
   let iter = 0;
 
   for (iter = 0; iter < maxIter; iter++) {
-    if (residualNorm <= tol) break;
-
-    // 前向差分雅可比 (m × n)
+    if (residualNorm <= tol) break;    // 前向差分雅可比 (m × n)
     const n = x.length;
     const eps = 1e-5;
     const J: number[][] = Array.from({ length: r.length }, () => new Array<number>(n).fill(0));
@@ -77,11 +121,13 @@ export function solveAutoAngles(
       for (let i = 0; i < r.length; i++) J[i][j] = (rp[i] - r[i]) / eps;
     }
 
-    // JtJ + λ diag(JtJ), 右端 Jᵀr
+    // JtJ + λ diag(JtJ), 右端 Jᵀr；近奇异时加大对角阻尼以保持数值稳定
     const Jt = transpose(J);
     const JtJ = matMul(Jt, J);
     const Jtr = matVec(Jt, r);
-    const A = JtJ.map((row, i) => row.map((v, j) => (i === j ? v + lambda * Math.max(v, 1e-6) : v)));
+    const A = JtJ.map((row, i) =>
+      row.map((v, j) => (i === j ? v + lambda * Math.max(v, 1e-4) : v)),
+    );
 
     let step: number[] | null = null;
     try {
@@ -93,17 +139,22 @@ export function solveAutoAngles(
     }
 
     if (step && step.every((v) => Number.isFinite(v))) {
-      // 限制单步步长，避免越过 π 造成翻转震荡
+      // 限制单步步长，避免越过 π 或在近共面处分叉跳变；同时投影到 M/V 符号边界
       const maxStep = Math.max(...step.map(Math.abs), 0);
-      const scale = maxStep > 0.5 ? 0.5 / maxStep : 1;
-      const xNew = x.map((v, i) => clamp(v - step[i] * scale, -Math.PI + 1e-3, Math.PI - 1e-3));
+      const scale = maxStep > 0.35 ? 0.35 / maxStep : 1;
+      const xNew = x.map((v, i) => {
+        const cand = v - step[i] * scale;
+        return Math.min(bounds[i][1], Math.max(bounds[i][0], cand));
+      });
       const rNew = evaluate(xNew);
-      const newNorm = norm(rNew);
-      if (newNorm < residualNorm) {
+      const newNorm = norm(rNew); // 含正则的总残差，决定 LM 接受/退避
+      const newClosure = closureNorm(xNew);
+      if (newNorm < norm(r)) {
         x = xNew;
         r = rNew;
-        residualNorm = newNorm;
+        residualNorm = newClosure;
         lambda = Math.max(lambda / 3, 1e-9);
+        if (newClosure <= tol) break;
         continue;
       }
     }
@@ -120,7 +171,23 @@ export function solveAutoAngles(
     angles,
     residual: residualNorm,
     iterations: iter,
+    closureEdges,
   };
+}
+
+/** 供延续引擎调用：给定未知量初值快速收紧，返回是否接受该步。 */
+export function solveStep(
+  graph: FoldGraph,
+  signedAngles: number[],
+  autoEdges: number[],
+  warmX: number[],
+  tol = 5e-4,
+): SolveResult {
+  return solveAutoAngles(graph, signedAngles, autoEdges, {
+    initial: warmX,
+    fast: true,
+    tol,
+  });
 }
 
 function closureResiduals(
@@ -171,8 +238,4 @@ function matMul(a: number[][], b: number[][]): number[][] {
 
 function matVec(a: number[][], v: number[]): number[] {
   return a.map((row) => row.reduce((s, x, i) => s + x * v[i], 0));
-}
-
-function clamp(v: number, lo: number, hi: number): number {
-  return Math.min(hi, Math.max(lo, v));
 }

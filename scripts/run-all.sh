@@ -10,6 +10,8 @@ run() {
 }
 run test-engine
 run test-collision
+run test-continuation
+run test-path-persist
 run test-roundtrip
 run test-store
 run test-idb

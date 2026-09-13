@@ -25,6 +25,8 @@ export interface LoadedGraph {
   title: string;
   /** 载入阶段发现的结构问题 */
   problems: string[];
+  /** 随工程一起保存的运动路径（序列化形式，加载后由 continuation 重放） */
+  paths?: unknown[];
 }
 
 export function loadFold(input: string | RawFold): LoadedGraph {
@@ -158,6 +160,7 @@ export function loadFold(input: string | RawFold): LoadedGraph {
     },
     title: (raw.frame_title as string) ?? '未命名折痕图',
     problems,
+    paths: (raw[`${NS}_paths`] as unknown[]) ?? undefined,
   };
 }
 
@@ -176,8 +179,13 @@ function signedArea(ring: number[], verts: [number, number][]): number {
   return s / 2;
 }
 
-/** 导出：保留顶点、面、折痕身份与折叠参数。 */
-export function exportFold(graph: FoldGraph, title: string, keepFold: boolean): RawFold {
+/** 导出：保留顶点、面、折痕身份与折叠参数。paths 为序列化的运动路径。 */
+export function exportFold(
+  graph: FoldGraph,
+  title: string,
+  keepFold: boolean,
+  paths?: unknown,
+): RawFold {
   const fold: RawFold = {
     file_spec: 1.1,
     frame_title: title,
@@ -197,5 +205,6 @@ export function exportFold(graph: FoldGraph, title: string, keepFold: boolean): 
     fold.edges_foldAngle = graph.creases.map(() => 0);
   }
   fold[`${NS}_crease_id`] = graph.creases.map((c) => c.id);
+  if (paths !== undefined) fold[`${NS}_paths`] = paths as unknown[];
   return fold;
 }

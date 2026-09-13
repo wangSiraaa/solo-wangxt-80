@@ -1,9 +1,13 @@
 <template>
   <div class="inspector">
     <h3>折痕属性</h3>
+    <p v-if="store.inPathMode" class="path-note">
+      路径模式：视图显示所选路径的运动形态，角度滑块不改变该路径；退出路径模式后可继续编辑源折痕。
+    </p>
     <template v-if="edge >= 0 && crease">
       <div class="row">
         <span class="label">折痕 #{{ edge }}</span>
+        <span v-if="isPinned" class="pinned">路径驱动</span>
         <span class="id">身份：{{ crease.id }}</span>
       </div>
       <div class="row assign">
@@ -81,9 +85,17 @@ const edge = computed(() =>
 const crease = computed(() =>
   edge.value >= 0 ? store.graph?.creases[edge.value] : null,
 );
-const angleDeg = computed(() =>
-  crease.value ? (crease.value.angle * 180) / Math.PI : 0,
-);
+const angleDeg = computed(() => {
+  if (crease.value) {
+    // 路径模式下显示该步构型中的实际角度（可能由求解器决定）
+    const cfg = store.displayedConfig;
+    if (cfg) return (cfg.signedAngles[edge.value] * 180) / Math.PI;
+    return (crease.value.angle * 180) / Math.PI;
+  }
+  return 0;
+});
+
+const isPinned = computed(() => store.pinnedEdges.includes(edge.value));
 
 const onSliderDown = () => {
   store.beginInteraction('调整折痕角度');
@@ -187,5 +199,22 @@ h3 {
   color: #98a2b3;
   margin: 6px 0 0;
   line-height: 1.5;
+}
+.path-note {
+  font-size: 11px;
+  color: #1d4e89;
+  background: #f0f6ff;
+  padding: 5px 7px;
+  border-radius: 5px;
+  margin: 0 0 8px;
+  line-height: 1.5;
+}
+.pinned {
+  font-size: 10px;
+  color: #b54708;
+  background: #fffaeb;
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-right: auto;
 }
 </style>

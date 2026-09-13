@@ -31,8 +31,11 @@ export interface PropagationResult {
   connected: boolean;
 }
 
-/** 用并查集构造“自动折痕优先”的生成树，保证 auto 边尽量落在树内（其角度才是可解未知量）。 */
-function buildSpanningTree(graph: FoldGraph): { treeEdges: Set<number>; parent: Int32Array } {
+/** 用并查集构造生成树；allow 给定时只使用其中的边（求解器用它只放自动边上树）。 */
+function buildSpanningTree(
+  graph: FoldGraph,
+  allow?: Set<number>,
+): { treeEdges: Set<number>; parent: Int32Array } {
   const n = graph.facesVertices.length;
   const parent = new Int32Array(n).fill(-1);
   const find = (x: number): number => {
@@ -57,9 +60,10 @@ function buildSpanningTree(graph: FoldGraph): { treeEdges: Set<number>; parent: 
 
   const traversable: number[] = [];
   for (let e = 0; e < graph.edgesVertices.length; e++) {
-    if (graph.edgesFaces[e].length === 2 && isTraversable(graph.creases[e].assignment)) {
-      traversable.push(e);
-    }
+    if (graph.edgesFaces[e].length !== 2) continue;
+    if (!isTraversable(graph.creases[e].assignment)) continue;
+    if (allow && !allow.has(e)) continue;
+    traversable.push(e);
   }
   // 自动角折痕优先上树（其角度通过传播驱动面片位姿），固定角边自然成为闭环边。
   traversable.sort((a, b) => Number(graph.creases[b].auto) - Number(graph.creases[a].auto));
@@ -68,6 +72,15 @@ function buildSpanningTree(graph: FoldGraph): { treeEdges: Set<number>; parent: 
   for (const e of traversable) {
     const [fa, fb] = graph.edgesFaces[e] as [number, number];
     if (union(fa, fb)) treeEdges.add(e);
+  }
+  // allow 存在时，剩余面用全部可折边再补一次（自动边之间无法连通时的兜底）
+  if (allow) {
+    for (let e = 0; e < graph.edgesVertices.length; e++) {
+      if (treeEdges.has(e) || graph.edgesFaces[e].length !== 2) continue;
+      if (!isTraversable(graph.creases[e].assignment)) continue;
+      const [fa, fb] = graph.edgesFaces[e] as [number, number];
+      if (union(fa, fb)) treeEdges.add(e);
+    }
   }
   return { treeEdges, parent };
 }
@@ -80,11 +93,19 @@ function edgeOrientationInFace(graph: FoldGraph, edge: number, face: number): [n
 
 /**
  * 执行折叠。
- * @param signedAngles 每条边的有向折叠角（M 正、V 负）；auto 边由此参数传入候选值
+ * @param signedAngles 每条边的有向折叠角（M 正、V 负）
+ * @param onlyEdges 只把这些折痕边当作铰链构造成树：
+ *   - 求解器传入自动边集合，使固定角边成为“必须闭合”的闭环约束；
+ *   - 最终评估省略该参数，所有折痕都上树，此时所有闭环边都应天然闭合，
+ *     残差非零即说明折角组合不相容（例如违反川崎条件）。
  */
-export function propagate(graph: FoldGraph, signedAngles: number[]): PropagationResult {
+export function propagate(
+  graph: FoldGraph,
+  signedAngles: number[],
+  onlyEdges?: Set<number>,
+): PropagationResult {
   const n = graph.facesVertices.length;
-  const { treeEdges } = buildSpanningTree(graph);
+  const { treeEdges } = buildSpanningTree(graph, onlyEdges);
 
   // 树邻接
   const treeAdj: { face: number; edge: number }[][] = Array.from({ length: n }, () => []);
