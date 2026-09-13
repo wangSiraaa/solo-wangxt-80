@@ -17,6 +17,11 @@ export function boundsForEdge(graph: FoldGraph, e: number): [number, number] {
   }
 }
 
+/** 全工具统一的“约束已闭合/收敛”容差（闭环裂缝的最大尺度）。
+ *  延续接受步与 evaluateConfiguration 的收敛判定必须使用同一阈值，
+ *  否则会出现“路径到达目标、页面却报未收敛”。 */
+export const CLOSURE_TOLERANCE = 2.5e-3;
+
 export interface SolveOptions {
   /** 未知量（自动边）的起始猜测；延续求解时传上一步的解 */
   initial?: number[];

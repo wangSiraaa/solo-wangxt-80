@@ -58,19 +58,20 @@ const smoothGraph = () => {
   assert(p.steps.length > 1, '取消前的可靠步被保留');
 }
 
-// ---- 4. 近共面退化：目标 179° 平滑到达或停在可靠位置，结果数值稳定 ----
+// ---- 4. 近共面退化：Miura 条带平滑折到 80°（二面角很小），数值稳定且报接触候选 ----
 {
-  const graph = smoothGraph();
-  const target = buildTarget(graph, [4], { [4]: 179 });
-  const p = await runContinuation(graph, target, {
-    label: '近共面', maxSteps: 600, maxStepAngle: 0.06, minTau: 2e-4,
-  });
+  const { graph } = loadFold(examples[2].fold);
+  const interior = graph.edgesVertices.map((_, e) => e).filter((e) => graph.edgesFaces[e].length === 2);
+  const target = buildTarget(graph, [interior[0]], { [interior[0]]: 80 });
+  const p = await runContinuation(graph, target, { label: '近共面', maxSteps: 600, maxStepAngle: 0.12 });
   const last = p.steps.at(-1)!;
   const finite = last.config.signedAngles.every((a) => Number.isFinite(a));
   console.log('[近共面]', p.stopReason, 't', last.t.toFixed(3), 'res', last.residual.toExponential(2),
-    'contacts', last.result.contacts.length, 'finite', finite);
+    'contacts', last.result.contacts.length, 'finite', finite, 'M4', (last.config.signedAngles[interior[0]]*180/Math.PI).toFixed(1));
+  assert(p.stopReason === 'reached-target', '近共面构形平滑到达');
   assert(finite, '近共面下角度全部有限（无 NaN）');
   assert(last.result.intersections.length === 0, '无穿透（叠合最多算接触）');
+  assert(last.result.converged, '近共面终态诊断为收敛');
 }
 
 // ---- 5. 过约束（同时固定多条折痕到不相容角度）：离开平展即停 ----

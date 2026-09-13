@@ -7,6 +7,7 @@ import type { FoldConfiguration, FoldGraph, FoldResult } from '../fold/types';
 import { computeFold, evaluateConfiguration } from '../fold/engine';
 import { exportFold, loadFold } from '../fold/graph';
 import { examples } from '../fold/examples';
+import { CLOSURE_TOLERANCE } from '../fold/solver';
 import {
   buildTarget,
   deserializePath,
@@ -328,13 +329,15 @@ export const useOrigamiStore = () => {
     const p = activePath.value;
     if (!p) return;
     const step = activeStepIdx.value;
-    if (!p.keyframes.includes(step)) {
-      p.keyframes.push(step);
-      p.keyframeMeta.push({ step, label, t: p.steps[step].t });
-      p.keyframes.sort((a, b) => a - b);
-      p.keyframeMeta.sort((a, b) => a.step - b.step);
-      bump();
-    }
+    if (p.keyframes.includes(step)) return;
+    const meta = [...p.keyframeMeta, { step, label, t: p.steps[step].t }].sort(
+      (a, b) => a.step - b.step,
+    );
+    const keyframes = [...p.keyframes, step].sort((a, b) => a - b);
+    // MotionPath 不做深度响应式：用新对象替换并整体替换 paths 数组，保证立即刷新
+    const updated: MotionPath = { ...p, keyframes, keyframeMeta: meta };
+    paths.value = paths.value.map((x) => (x.id === p.id ? updated : x));
+    bump();
   };
 
   const jumpKeyframe = (step: number) => setPlaybackStep(step);
@@ -367,10 +370,16 @@ export const useOrigamiStore = () => {
   const foldResult = computed<FoldResult | null>(() => {
     void graphVersion.value;
     if (!graph.value) return null;
-    const cfg = displayedConfig.value;
-    if (cfg) {
-      // 路径回放：几何是确定性的，直接评估保存的构型
-      return evaluateConfiguration(graph.value, cfg);
+    const p = activePath.value;
+    if (p) {
+      const idx = Math.min(activeStepIdx.value, p.steps.length - 1);
+      const step = p.steps[Math.max(0, idx)];
+      // 路径回放：用保存步的残差与统一容差判定收敛，保证与延续接受时一致
+      return evaluateConfiguration(graph.value, step.config, {
+        converged: step.residual <= p.closureTolerance,
+        solveResidual: step.residual,
+        iterations: step.iterations,
+      });
     }
     return computeFold(graph.value);
   });
@@ -486,6 +495,7 @@ export const useOrigamiStore = () => {
     get inPathMode() {
       return activePathId.value !== null;
     },
+    closureTolerance: CLOSURE_TOLERANCE,
     get canUndo() {
       return canUndo.value;
     },

@@ -11,6 +11,8 @@ run() {
 run test-engine
 run test-collision
 run test-continuation
+run test-branch-select
+run test-page-states
 run test-path-persist
 run test-roundtrip
 run test-store

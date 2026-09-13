@@ -44,9 +44,15 @@
         :class="{ active: p.id === store.activePathId }"
       >
         <button class="pname" @click="store.selectPath(p.id)">
-          <span>{{ p.label }}</span>
+          <span class="plabel">{{ p.label }}</span>
           <span :class="['stop', stopClass(p.stopReason)]">{{ stopLabel(p.stopReason) }}</span>
-          <span class="meta">{{ p.steps.length }} 步 · t={{ p.steps.at(-1)!.t.toFixed(2) }}</span>
+          <span class="meta">
+            {{ p.steps.length }} 步 · t={{ p.steps.at(-1)!.t.toFixed(2) }}
+            · 残差 {{ (p.steps.at(-1)!.residual ?? 0).toExponential(1) }}
+          </span>
+          <span class="branch" :title="p.branchSignature.join(' ')">
+            分支：{{ p.branchId || '平展' }}
+          </span>
         </button>
         <button class="del" title="删除路径" @click="store.removePath(p.id)">×</button>
       </li>
@@ -54,6 +60,12 @@
 
     <template v-if="store.activePath">
       <div class="playback">
+        <div class="branch-row">
+          分支身份 <code>{{ store.activePath.branchId || '平展' }}</code>
+          <span v-if="store.activePath.branchSignature.length">
+            （先动 {{ store.activePath.branchSignature.join('、') }}）
+          </span>
+        </div>
         <div class="pb-head">
           <button class="btn sm" @click="step(-1)">◀</button>
           <input
@@ -69,6 +81,10 @@
         </div>
         <div class="pb-info">
           t={{ currentStep?.t.toFixed(3) }} · 残差 {{ (currentStep?.residual ?? 0).toExponential(1) }}
+          / 可接受 ≤ {{ store.closureTolerance.toExponential(1) }}
+          <span :class="stepClosed ? 'ok-tag' : 'bad-tag'">
+            {{ stepClosed ? '已闭合' : '未闭合' }}
+          </span>
           <span v-if="currentStep?.result.intersections.length" class="bad">穿透 {{ currentStep.result.intersections.length }}</span>
         </div>
         <div class="pb-actions">
@@ -172,6 +188,12 @@ const onScrub = (e: Event) =>
   store.setPlaybackStep(Number((e.target as HTMLInputElement).value));
 const step = (d: number) => store.setPlaybackStep(store.activeStepIdx + d);
 const addKf = () => store.addKeyframe(`t=${(currentStep.value?.t ?? 0).toFixed(2)}`);
+
+const stepClosed = computed(() => {
+  const s = currentStep.value;
+  const p = store.activePath;
+  return !!s && !!p && s.residual <= p.closureTolerance;
+});
 
 const stopLabel = (r: StopReason): string => {
   switch (r) {
@@ -302,6 +324,37 @@ h3 {
   flex-direction: column;
   gap: 2px;
   font-size: 12px;
+}
+.plabel {
+  font-weight: 600;
+}
+.branch {
+  font-size: 10px;
+  color: #1d4e89;
+  font-family: monospace;
+  word-break: break-all;
+}
+.branch-row {
+  font-size: 11px;
+  color: #475467;
+  margin-bottom: 5px;
+  line-height: 1.5;
+}
+.branch-row code {
+  background: #f0f6ff;
+  color: #1d4e89;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.ok-tag {
+  color: #1a7f37;
+  margin-left: 6px;
+  font-weight: 600;
+}
+.bad-tag {
+  color: #b54708;
+  margin-left: 6px;
+  font-weight: 600;
 }
 .stop {
   font-size: 10px;

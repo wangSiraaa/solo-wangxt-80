@@ -11,6 +11,7 @@
         <li>折痕：{{ creaseCount }}</li>
         <li>求解迭代：{{ result.iterations }}</li>
         <li>残差：{{ result.residual.toExponential(2) }}</li>
+        <li v-if="store.inPathMode">容差：≤{{ store.closureTolerance.toExponential(1) }}</li>
       </ul>
       <div v-if="result.issues.length" class="issues">
         <div v-for="(issue, i) in result.issues" :key="i" :class="['issue', issue.kind]">

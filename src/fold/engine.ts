@@ -12,10 +12,11 @@ import type {
   ContactPair,
 } from './types';
 import { propagate, triangulatePolygon, isTraversable } from './fold';
-import { solveAutoAngles } from './solver';
+import { solveAutoAngles, CLOSURE_TOLERANCE } from './solver';
 import { classifyTriPair } from './collision';
 
-const CONVERGE_TOL = 5e-4;
+/** 静态求解容差（与延续接受步使用同一物理阈值）。 */
+const CONVERGE_TOL = CLOSURE_TOLERANCE;
 
 export function signedAngleOf(assignment: string, magnitude: number): number {
   return assignment === 'V' ? -magnitude : magnitude;
@@ -107,12 +108,14 @@ export function evaluateConfiguration(
     .filter((g) => g.gap > 1e-9)
     .sort((a, b) => b.gap - a.gap);
 
-  const converged = extras.converged ?? closureGaps.length === 0;
+  // 收敛判定统一使用 CLOSURE_TOLERANCE：最大闭环裂缝不超过阈值即视为已闭合，
+  // 微小裂缝仍保留在 closureGaps 中供定位，但不再产生“未收敛”误报。
+  const maxGap = Math.max(extras.solveResidual ?? 0, closureGaps[0]?.gap ?? 0);
+  const converged = extras.converged ?? maxGap <= CLOSURE_TOLERANCE;
   if (!converged) {
-    const maxGap = Math.max(extras.solveResidual ?? 0, closureGaps[0]?.gap ?? 0);
     issues.push({
       kind: 'nonConverged',
-      message: `折叠约束未收敛：存在无法同时闭合的折痕顶点（最大裂缝 ${maxGap.toFixed(4)}，例如不满足川崎条件）`,
+      message: `折叠约束未收敛：存在无法同时闭合的折痕顶点（最大裂缝 ${maxGap.toFixed(4)} > 容差 ${CLOSURE_TOLERANCE.toFixed(4)}，例如不满足川崎/前川条件或固定角不相容）`,
     });
   }
 
@@ -147,7 +150,7 @@ export function evaluateConfiguration(
     solvedAngles,
     converged,
     iterations: extras.iterations ?? 0,
-    residual: extras.solveResidual ?? (closureGaps[0]?.gap ?? 0),
+    residual: maxGap,
     issues,
     connected: prop.connected,
   };

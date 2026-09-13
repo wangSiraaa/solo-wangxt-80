@@ -11,7 +11,7 @@
 import type { FoldConfiguration, FoldGraph, FoldResult } from './types';
 import { isTraversable } from './fold';
 import { evaluateConfiguration } from './engine';
-import { solveAutoAngles } from './solver';
+import { solveAutoAngles, CLOSURE_TOLERANCE, boundsForEdge } from './solver';
 import { propagate } from './fold';
 
 export type StopReason =
@@ -41,6 +41,10 @@ export interface MotionPath {
   label: string;
   /** 分支选择种子：自动边初值的偏置（0 表示平展附近的自然分支） */
   branchSeed: number[];
+  /** 稳定分支身份：归一化的“离场方向签名”，同一目标下不同签名即不同运动分支 */
+  branchId: string;
+  /** 人类可读的离场方向（哪些折痕先动），用于页面区分两条路径 */
+  branchSignature: string[];
   /** 目标构型（用户固定角 + 自动角集合） */
   target: FoldConfiguration;
   /** 平展构型（t=0） */
@@ -52,8 +56,19 @@ export interface MotionPath {
   keyframes: number[];
   /** 用户标注的关键帧信息（与 steps 下标对应） */
   keyframeMeta: { step: number; label: string; t: number }[];
+  /** 延续接受步使用的闭合容差，与诊断面板共用同一阈值 */
+  closureTolerance: number;
   /** 重放指纹：最终构型角度序列，重载后用于校验形态一致 */
   fingerprint: string;
+}
+
+export interface BranchChoice {
+  /** 自动边未知量的离场值（弧度） */
+  x: number[];
+  /** 该候选的几何残差（最大闭环裂缝） */
+  residual: number;
+  /** 归一化离场方向（用于稳定签名与 seed 匹配） */
+  direction: number[];
 }
 
 export interface ContinuationOptions {
@@ -73,9 +88,8 @@ export interface ContinuationOptions {
 const DEFAULT_MAX_STEP_ANGLE = 0.18; // 每步折角最多约 10°
 const DEFAULT_TAU = 0.05;
 const DEFAULT_MIN_TAU = 1e-3;
-/** 延续接受步的几何闭合容差：比静态求解容差更严，防止不相容构型（如违反川崎）
- *  在较松的残差下被一步步“滑过去”。 */
-const CLOSURE_TOL = 2.5e-3;
+/** 延续接受步的几何闭合容差，与求解器/诊断统一。 */
+const CLOSURE_TOL = CLOSURE_TOLERANCE;
 
 export function flatConfiguration(graph: FoldGraph): FoldConfiguration {
   return {
@@ -121,6 +135,180 @@ function propagateForResidual(graph: FoldGraph, angles: number[]): number[] {
   return propagate(graph, angles).closureGaps.map((g) => g.gap);
 }
 
+/** 向量归一化（零向量保持零）。 */
+function unit(v: number[]): number[] {
+  const len = Math.hypot(...v) || 1;
+  return v.map((x) => x / len);
+}
+
+function dot(a: number[], b: number[]): number {
+  return a.reduce((s, x, i) => s + x * b[i], 0);
+}
+
+/** 离场方向的稳定签名：按贡献最大的若干自动边方向离散化，与具体幅值无关。 */
+function directionSignature(graph: FoldGraph, edges: number[], x: number[]): string {
+  const entries = x
+    .map((v, i) => ({ e: edges[i], v, i }))
+    .filter((d) => Math.abs(d.v) > 0.05)
+    .sort((a, b) => Math.abs(b.v) - Math.abs(a.v));
+  // 取贡献前 4 的折痕，记录折痕号与符号，构成稳定身份
+  return entries
+    .slice(0, 4)
+    .map((d) => `${graph.creases[d.e].assignment}${d.e}${d.v >= 0 ? '+' : '-'}`)
+    .join('/');
+}
+
+/** 人类可读的离场描述。 */
+function describeSignature(graph: FoldGraph, edges: number[], x: number[]): string[] {
+  return x
+    .map((v, i) => ({ e: edges[i], v, a: graph.creases[edges[i]].assignment }))
+    .filter((d) => Math.abs(d.v) > 0.05)
+    .sort((a, b) => Math.abs(b.v) - Math.abs(a.v))
+    .map((d) => `#${d.e}${d.a}${(d.v * 180 / Math.PI) >= 0 ? '+' : '−'}`);
+}
+
+/**
+ * 平展分岔点的分支探测：
+ * 1) 在小 t 引导下，从多组小角度初值（含 seed 指定方向）求解；
+ * 2) 只保留“所有自动边都小角度、平滑离开平展”的可行候选；
+ * 3) 按离场方向聚类去重；
+ * 4) 用与 seed 的方向一致性选支（seed=0 时取角度范数最小的自然支），
+ *    绝不再被某个残差极小的大角度“伪闭合”解覆盖。
+ */
+function detectBranch(
+  graph: FoldGraph,
+  target: FoldConfiguration,
+  guideAngles: number[],
+  seed: number[],
+): { x: number[]; direction: number[]; signature: string; description: string[]; feasible: boolean } {
+  const auto = target.autoEdges;
+  const SMOOTH_LIMIT = 0.22; // 离场步自动边最大约 12.6°，超出视为翻转/非连续支
+  const signDir = auto.map((e) => (graph.creases[e].assignment === 'V' ? -1 : 1));
+
+  // 候选初值：沿各折痕山/谷符号的小角度，外加单折痕主导方向与 seed
+  const trials: number[][] = [];
+  const push = (v: number[]) => {
+    if (v.every(Number.isFinite) && !trials.some((t) => Math.max(...t.map((x, i) => Math.abs(x - v[i]))) < 1e-6)) {
+      trials.push(v);
+    }
+  };
+  push(signDir.map((s) => s * 0.04));
+  push(signDir.map((s) => s * 0.1));
+  auto.forEach((_, k) => {
+    push(signDir.map((s, i) => (i === k ? s * 0.12 : s * 0.02)));
+  });
+  if (seed.some((v) => Math.abs(v) > 1e-9)) {
+    // seed 分量已带符号，归一到小角度幅度
+    const maxAbs = Math.max(...seed.map(Math.abs), 1e-9);
+    push(seed.map((v) => (v / maxAbs) * 0.12));
+    push(seed.map((v) => (v / maxAbs) * 0.04));
+  }
+
+  const choices: BranchChoice[] = [];
+  for (const init of trials) {
+    const r = solveAutoAngles(graph, guideAngles, auto, {
+      initial: init,
+      nominal: signDir.map((s) => s * 0.03),
+      regWeight: 0.12,
+      fast: true,
+      maxIter: 40,
+      tol: CLOSURE_TOL * 0.4,
+    });
+    const x = auto.map((e) => {
+      const v = r.angles[e];
+      const [lo, hi] = boundsForEdge(graph, e);
+      return Math.min(hi, Math.max(lo, v));
+    });
+    const geomRes = Math.max(r.residual, ...propagateForResidual(graph, r.angles));
+    const smooth = x.every((v) => Math.abs(v) <= SMOOTH_LIMIT);
+    const signOk = auto.every((e, i) => {
+      const v = x[i];
+      const a = graph.creases[e].assignment;
+      if (a === 'M') return v >= -1e-3;
+      if (a === 'V') return v <= 1e-3;
+      return true;
+    });
+    if (geomRes > CLOSURE_TOL || !smooth || !signOk) continue;
+    choices.push({ x, residual: geomRes, direction: unit(x.map(Math.abs)) });
+  }
+
+  // 无平滑可行候选：返回角度范数最小的符号方向（交给外层判定不可行后停止）
+  // 无平滑可行候选：沿 seed 符号给一个极小离场值并标记不可行（主循环随后停止）
+  if (choices.length === 0) {
+    const fallback = signDir.map((s, i) => s * (Math.abs(seed[i] ?? 0) > 1e-9 ? 0.02 : 0.001));
+    return {
+      x: fallback,
+      direction: unit(fallback.map(Math.abs)),
+      signature: directionSignature(graph, auto, fallback),
+      description: describeSignature(graph, auto, fallback),
+      feasible: false,
+    };
+  }
+
+  // 按离场方向聚类（余弦相似 + 角度接近）
+  const clusters: BranchChoice[] = [];
+  for (const c of choices) {
+    let ci = clusters.findIndex(
+      (rep) =>
+        Math.abs(dot(rep.direction, c.direction)) > 0.94 &&
+        Math.max(...rep.x.map((v, i) => Math.abs(v - c.x[i]))) < 0.06,
+    );
+    if (ci < 0) clusters.push(c);
+    else if (c.residual < clusters[ci].residual) clusters[ci] = c;
+  }
+
+  // 选支：seed 非零 -> 只在与 seed 方向足够一致的簇中选择；
+  // 若没有任何簇满足方向阈值，说明所请求的分支在该符号指派下不是平滑支，标记不可行。
+  const seedActive = seed.some((v) => Math.abs(v) > 1e-9);
+  let picked: BranchChoice | null = null;
+  if (seedActive) {
+    // 自动角的可行符号已由山/谷边界固定，这里用 |seed| 的方向决定“哪些折痕先动”。
+    // 除余弦对齐外，还要求主导折痕（贡献最大分量）一致，避免小分量投影造成的误配。
+    const seedDirection = unit(seed.map(Math.abs));
+    const seedLead = new Set(
+      seedDirection
+        .map((v, i) => ({ v, i }))
+        .filter((d) => d.v > 0.55)
+        .map((d) => d.i),
+    );
+    const aligned = clusters
+      .map((c) => {
+        const leadIdx = c.direction.reduce((mi, v, i) => (v > c.direction[mi] ? i : mi), 0);
+        return {
+          c,
+          score: dot(c.direction, seedDirection),
+          leadMatch: seedLead.has(leadIdx),
+        };
+      })
+      .filter((d) => d.score > 0.55 && d.leadMatch)
+      .sort((a, b) => b.score - a.score || a.c.residual - b.c.residual);
+    picked = aligned[0]?.c ?? null;
+  } else {
+    picked = clusters
+      .map((c) => ({ c, norm: Math.hypot(...c.x) }))
+      .sort((a, b) => a.norm - b.norm || a.c.residual - b.c.residual)[0].c;
+  }
+
+  if (!picked) {
+    const fallback = signDir.map((s, i) => s * (Math.abs(seed[i] ?? 0) > 1e-9 ? 0.02 : 0.001));
+    return {
+      x: fallback,
+      direction: unit(fallback.map(Math.abs)),
+      signature: directionSignature(graph, auto, fallback),
+      description: describeSignature(graph, auto, fallback),
+      feasible: false,
+    };
+  }
+
+  return {
+    x: picked.x,
+    direction: picked.direction,
+    signature: directionSignature(graph, auto, picked.x),
+    description: describeSignature(graph, auto, picked.x),
+    feasible: true,
+  };
+}
+
 /** 单分支延续。返回完整路径（含每一步快照，便于逐帧回放与比较）。 */
 export async function runContinuation(
   graph: FoldGraph,
@@ -149,58 +337,45 @@ export async function runContinuation(
 
   let t = 0;
   let lastAngles = flat.signedAngles.slice();
-  let warmX = target.autoEdges.map((_, i) => seed[i] ?? 0);
   let stopReason: StopReason = 'max-steps';
   let failStreak = 0;
-  let initialized = false;
+  let branchId = 'flat';
+  let branchSignature: string[] = [];
+  let warmX: number[] = target.autoEdges.map(() => 0);
 
-  /** 平展态是构型空间的分岔奇点（残差关于角度的梯度在原点为 0），
-   *  单起点 LM 无法离开平展。这里在符号允许范围内用多组初值做一次分支探测，
-   *  选出残差最小的方向作为本路径跟踪的运动分支。 */
-  const detectBranch = (guideAngles: number[]): number[] => {
-    const patterns: number[][] = [];
-    // 各自动边沿自身山/谷符号的小角度；再覆盖几组一致大幅值初值
-    const small = target.autoEdges.map((e) =>
-      graph.creases[e].assignment === 'V' ? -0.05 : 0.05,
-    );
-    patterns.push(small);
-    patterns.push(small.map((v) => v * 4));
-    for (const amp of [0.4, 1.2, 2.4]) {
-      patterns.push(
-        target.autoEdges.map((e) =>
-          graph.creases[e].assignment === 'V' ? -amp : amp,
-        ),
-      );
+  // 平展分岔点：在离开平展前只做一次分支探测，按 seed/连续性选支而非全局最小残差。
+  // 若请求的分支在当前山/谷符号下没有平滑可行解，直接停在平展（最后可靠位置）。
+  if (target.autoEdges.length > 0) {
+    const firstGuide = guideConfiguration(target, Math.min(tau, 1));
+    const choice = detectBranch(graph, target, firstGuide.signedAngles, seed);
+    branchId = choice.signature;
+    branchSignature = choice.description;
+    warmX = choice.x;
+    if (!choice.feasible) {
+      stopReason = 'infeasible';
+      return finalizePath();
     }
-    if (seed.some((v) => v !== 0)) {
-      patterns.push(seed.slice());
-      patterns.push(seed.map((v) => (v < 0 ? -0.3 : 0.3) * Math.sign(v || 1)));
-    }
-    let best: { x: number[]; res: number } = { x: warmX.slice(), res: Infinity };
-    for (const p of patterns) {
-      const r = solveAutoAngles(graph, guideAngles, target.autoEdges, {
-        initial: p,
-        nominal: target.autoEdges.map((e) =>
-          graph.creases[e].assignment === 'V' ? -0.02 : 0.02,
-        ),
-        regWeight: 0.04,
-        fast: true,
-        maxIter: 30,
-        tol: CLOSURE_TOL,
-      });
-      const geomRes = Math.max(
-        r.residual,
-        ...propagateForResidual(graph, r.angles),
-      );
-      if (geomRes < best.res) {
-        best = {
-          x: target.autoEdges.map((e) => r.angles[e]),
-          res: geomRes,
-        };
-      }
-    }
-    return best.x;
-  };
+  }
+
+  function finalizePath(): MotionPath {
+    const finalStep = steps[steps.length - 1];
+    return {
+      id: `path_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+      label: options.label ?? '路径',
+      branchSeed: seed.slice(),
+      branchId,
+      branchSignature,
+      target,
+      flat,
+      steps,
+      stopReason,
+      createdAt: Date.now(),
+      keyframes: [],
+      keyframeMeta: [],
+      closureTolerance: CLOSURE_TOL,
+      fingerprint: fingerprint(finalStep.config),
+    };
+  }
 
   while (steps.length <= maxSteps) {
     if (options.shouldCancel?.()) {
@@ -220,12 +395,8 @@ export async function runContinuation(
     while (triedTau >= minTau) {
       const tTry = Math.min(1, t + triedTau);
       const guide = guideConfiguration(target, tTry);
-      if (!initialized) {
-        warmX = detectBranch(guide.signedAngles);
-        initialized = true;
-      }
       // 以上一可靠步的自动角解为热启动，并用软正则把零空间自由度拉回预测值，
-      // 使欠约束机构沿最小角变化的平滑分支延续，而不是数值上跳到任意解。
+      // 使欠约束机构沿同一分支平滑延续，而不是数值上跳到其它装配模。
       const solved = solveAutoAngles(graph, guide.signedAngles, target.autoEdges, {
         initial: warmX,
         nominal: warmX,
@@ -238,15 +409,28 @@ export async function runContinuation(
         signedAngles: solved.angles,
         autoEdges: target.autoEdges.slice(),
       };
-      const result = evaluateConfiguration(graph, config);
+      // 诊断与延续接受步使用同一闭合容差：到达目标时不会再报“未收敛”
+      const result = evaluateConfiguration(graph, config, {
+        converged: solved.residual <= CLOSURE_TOL,
+        solveResidual: solved.residual,
+        iterations: solved.iterations,
+      });
       const delta = maxAngleDelta(lastAngles, config.signedAngles);
       const penetrates = result.intersections.length > 0;
-      const maxGap = result.closureGaps[0]?.gap ?? 0;
+      const maxGap = result.residual;
       const signOk = target.autoEdges.every((e) => signConforms(graph, e, config.signedAngles[e]));
-      // 可行性以最终几何为准：闭环裂缝与求解残差都必须很小、无穿透、角度变化受控。
-      const geometricallyClosed = maxGap <= CLOSURE_TOL && solved.residual <= CLOSURE_TOL;
+      // 与已选分支保持连续：自动角解相对热启动的偏移不得超出单步角度预算
+      const branchDrift = maxAngleDelta(
+        warmX,
+        target.autoEdges.map((e) => config.signedAngles[e]),
+      );
+      const geometricallyClosed = maxGap <= CLOSURE_TOL;
       const feasible =
-        geometricallyClosed && !penetrates && signOk && delta <= maxStepAngle + 1e-6;
+        geometricallyClosed &&
+        !penetrates &&
+        signOk &&
+        delta <= maxStepAngle + 1e-6 &&
+        branchDrift <= maxStepAngle * 1.5 + 1e-6;
 
       const candidate: MotionStep = {
         t: tTry,
@@ -289,20 +473,7 @@ export async function runContinuation(
     }
   }
 
-  const finalStep = steps[steps.length - 1];
-  return {
-    id: `path_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
-    label: options.label ?? '路径',
-    branchSeed: seed.slice(),
-    target,
-    flat,
-    steps,
-    stopReason,
-    createdAt: Date.now(),
-    keyframes: [],
-    keyframeMeta: [],
-    fingerprint: fingerprint(finalStep.config),
-  };
+  return finalizePath();
 }
 
 export function fingerprint(config: FoldConfiguration): string {
@@ -330,11 +501,14 @@ export interface SerializedPath {
   id: string;
   label: string;
   branchSeed: number[];
+  branchId: string;
+  branchSignature: string[];
   target: FoldConfiguration;
   stopReason: StopReason;
   createdAt: number;
   keyframes: number[];
   keyframeMeta: { step: number; label: string; t: number }[];
+  closureTolerance: number;
   fingerprint: string;
   steps: {
     t: number;
@@ -350,11 +524,14 @@ export function serializePath(path: MotionPath): SerializedPath {
     id: path.id,
     label: path.label,
     branchSeed: path.branchSeed,
+    branchId: path.branchId,
+    branchSignature: path.branchSignature.slice(),
     target: path.target,
     stopReason: path.stopReason,
     createdAt: path.createdAt,
     keyframes: path.keyframes.slice(),
     keyframeMeta: path.keyframeMeta.map((k) => ({ ...k })),
+    closureTolerance: path.closureTolerance,
     fingerprint: path.fingerprint,
     steps: path.steps.map((s) => ({
       t: s.t,
@@ -368,17 +545,23 @@ export function serializePath(path: MotionPath): SerializedPath {
 
 export function deserializePath(data: SerializedPath, graph: FoldGraph): MotionPath {
   const flat = flatConfiguration(graph);
+  const tol = data.closureTolerance ?? CLOSURE_TOL;
   const steps: MotionStep[] = data.steps.map((s) => {
     const config: FoldConfiguration = {
       signedAngles: s.signedAngles,
       autoEdges: data.target.autoEdges.slice(),
     };
+    // 重放时用同一容差重新判定收敛，保证页面诊断与保存时一致
+    const closed = s.residual <= tol;
     return {
       t: s.t,
       config,
       residual: s.residual,
       iterations: s.iterations,
-      result: evaluateConfiguration(graph, config),
+      result: evaluateConfiguration(graph, config, {
+        converged: closed,
+        solveResidual: s.residual,
+      }),
       maxDelta: s.maxDelta,
       accepted: true,
     };
@@ -387,6 +570,8 @@ export function deserializePath(data: SerializedPath, graph: FoldGraph): MotionP
     id: data.id,
     label: data.label,
     branchSeed: data.branchSeed,
+    branchId: data.branchId ?? '',
+    branchSignature: data.branchSignature ?? [],
     target: data.target,
     flat,
     steps,
@@ -394,6 +579,7 @@ export function deserializePath(data: SerializedPath, graph: FoldGraph): MotionP
     createdAt: data.createdAt,
     keyframes: data.keyframes.slice(),
     keyframeMeta: data.keyframeMeta.map((k) => ({ ...k })),
+    closureTolerance: tol,
     fingerprint: data.fingerprint,
   };
 }
