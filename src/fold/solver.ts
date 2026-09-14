@@ -7,9 +7,10 @@ import { lusolve, squeeze, type Matrix } from 'mathjs';
 import type { FoldGraph } from './types';
 import { isTraversable, propagate } from './fold';
 
-/** 自动边允许的有向角范围：山折 M ≥ 0、谷折 V ≤ 0，F/U 不限。 */
+/** 自动边允许的有向角范围：山折 M ∈ [0,π]、谷折 V ∈ [-π,0]，F/U 不限。
+ *  π（两页精确共面贴合）是合法位姿，旋转矩阵在该角度良定义。 */
 export function boundsForEdge(graph: FoldGraph, e: number): [number, number] {
-  const lim = Math.PI - 1e-3;
+  const lim = Math.PI;
   switch (graph.creases[e].assignment) {
     case 'M': return [0, lim];
     case 'V': return [-lim, 0];

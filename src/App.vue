@@ -78,6 +78,10 @@ const currentExample = ref('single');
 onMounted(() => {
   store.loadExample('single');
   window.addEventListener('keydown', onKey);
+  // 仅开发/端到端测试：暴露 store 供浏览器自动化搭建确定性场景
+  if (import.meta.env.DEV) {
+    (window as unknown as { __ORIGAMI_STORE__?: unknown }).__ORIGAMI_STORE__ = store;
+  }
 });
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 

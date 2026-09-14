@@ -15,6 +15,20 @@
             :disabled="selectedEdge < 0"
           />°
         </label>
+        <button
+          class="btn sm"
+          :disabled="selectedEdge < 0 || isPinned(selectedEdge)"
+          @click="pinSelected"
+        >
+          固定此折痕
+        </button>
+      </div>
+      <div v-if="pins.length" class="pins">
+        <span class="pins-label">固定折痕（{{ pins.length }}）：</span>
+        <span v-for="(pin, i) in pins" :key="pin.edge" class="pin-chip">
+          #{{ pin.edge }}（{{ assignmentOf(pin.edge) }}）→ {{ pin.deg }}°
+          <button class="unpin" title="取消固定" @click="unpin(i)">×</button>
+        </span>
       </div>
       <label class="seed-row">
         分支偏移
@@ -29,7 +43,9 @@
           取消计算
         </button>
       </div>
-      <p v-if="selectedEdge < 0" class="hint">先在平面或空间视图选择一条折痕作为固定驱动；其余折痕自动求解。</p>
+      <p v-if="pins.length === 0" class="hint">
+        在平面/空间视图选择一条或多条折痕并“固定此折痕”，给出各自目标角；其余折痕自动求解。
+      </p>
       <div v-if="store.pathRunning" class="progress">
         <div class="bar"><div class="fill" :style="{ width: store.pathProgress * 100 + '%' }" /></div>
         延续中 {{ (store.pathProgress * 100).toFixed(0) }}%
@@ -51,7 +67,7 @@
             · 残差 {{ (p.steps.at(-1)!.residual ?? 0).toExponential(1) }}
           </span>
           <span class="branch" :title="p.branchSignature.join(' ')">
-            分支：{{ p.branchId || '平展' }}
+            分支：{{ p.branchId }}
           </span>
         </button>
         <button class="del" title="删除路径" @click="store.removePath(p.id)">×</button>
@@ -61,7 +77,7 @@
     <template v-if="store.activePath">
       <div class="playback">
         <div class="branch-row">
-          分支身份 <code>{{ store.activePath.branchId || '平展' }}</code>
+          分支身份 <code>{{ store.activePath.branchId }}</code>
           <span v-if="store.activePath.branchSignature.length">
             （先动 {{ store.activePath.branchSignature.join('、') }}）
           </span>
@@ -164,17 +180,37 @@ onBeforeUnmount(() => timer && clearInterval(timer));
 const selectedEdge = computed(() =>
   store.selection.kind === 'edge' ? store.selection.index : -1,
 );
+
+// 多折痕固定：用于在页面上构造过约束（失解）目标
+const pins = ref<{ edge: number; deg: number }[]>([]);
+const isPinned = (e: number) => pins.value.some((p) => p.edge === e);
+const assignmentOf = (e: number) => store.graph?.creases[e]?.assignment ?? '';
+const pinSelected = () => {
+  const e = selectedEdge.value;
+  if (e < 0 || isPinned(e)) return;
+  pins.value.push({ edge: e, deg: goalDeg.value });
+};
+const unpin = (i: number) => {
+  pins.value.splice(i, 1);
+};
+
 const canLaunch = computed(
-  () => selectedEdge.value >= 0 && !store.pathRunning && !!store.graph,
+  () => pins.value.length > 0 && !store.pathRunning && !!store.graph,
 );
 
 const launch = async () => {
-  const e = selectedEdge.value;
-  if (e < 0) return;
+  if (pins.value.length === 0) return;
+  const fixedEdges = pins.value.map((p) => p.edge);
+  const goalDegrees: Record<number, number> = {};
+  pins.value.forEach((p) => (goalDegrees[p.edge] = p.deg));
+  const label =
+    pins.value.length === 1
+      ? `路径 ${store.paths.length + 1}（边#${fixedEdges[0]} → ${pins.value[0].deg}°）`
+      : `路径 ${store.paths.length + 1}（固定 ${fixedEdges.length} 条）`;
   await store.runPath({
-    label: `路径 ${store.paths.length + 1}（边#${e} → ${goalDeg.value}°）`,
-    fixedEdges: [e],
-    goalDeg: { [e]: goalDeg.value },
+    label,
+    fixedEdges,
+    goalDeg: goalDegrees,
     branchBias: branchBias.value,
   });
 };
@@ -299,6 +335,26 @@ h3 {
   border-radius: 5px;
   margin: 6px 0 0;
   line-height: 1.5;
+}
+.pin-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  background: #fffaeb;
+  border: 1px solid #e4b94d;
+  border-radius: 10px;
+  padding: 1px 4px 1px 8px;
+  margin: 2px 4px 2px 0;
+}
+.unpin {
+  border: none;
+  background: none;
+  color: #b54708;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
 }
 .path-list {
   list-style: none;

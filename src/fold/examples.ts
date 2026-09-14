@@ -144,6 +144,28 @@ const miuraTwoVertex = {
   ],
 };
 
+/** 近共面接触：三页等宽条带，两条铰链都折到约 180°，两侧外页在中页同侧
+ *  完全贴合。无穿透，但产生距离≈0 的“无厚度接触候选”（不是材料叠层）。 */
+const coplanarContact = {
+  file_spec: 1.1,
+  frame_title: '近共面接触（三页）',
+  vertices_coords: [
+    [0, 0], [1, 0], [2, 0], [3, 0],
+    [0, 1], [1, 1], [2, 1], [3, 1],
+  ],
+  edges_vertices: [
+    [0, 1], [1, 2], [2, 3], [4, 5], [5, 6], [6, 7],
+    [0, 4], [1, 5], [2, 6], [3, 7],
+  ],
+  edges_assignment: ['B', 'B', 'B', 'B', 'B', 'B', 'B', 'M', 'M', 'B'],
+  edges_foldAngle: [0, 0, 0, 0, 0, 0, 0, 180, 180, 0],
+  faces_vertices: [
+    [0, 1, 5, 4],
+    [1, 2, 6, 5],
+    [2, 3, 7, 6],
+  ],
+};
+
 export const examples: ExampleDef[] = [
   {
     key: 'single',
@@ -162,6 +184,12 @@ export const examples: ExampleDef[] = [
     label: 'Miura 双顶点联动',
     description: '两个度-4 顶点联动的之字网格；沿平展逐步延续跟踪运动分支，避免突然翻面。',
     fold: miuraTwoVertex,
+  },
+  {
+    key: 'contact3',
+    label: '近共面接触（三页）',
+    description: '两外页折到中页同侧完全贴合：无穿透，但面片对作为无厚度接触候选出现。',
+    fold: coplanarContact,
   },
   {
     key: 'inconsistent',

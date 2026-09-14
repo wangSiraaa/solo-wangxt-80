@@ -257,11 +257,16 @@ export const useOrigamiStore = () => {
     if (!graph.value || pathRunning.value) return;
     const g = graph.value;
     const target = buildTarget(g, opts.fixedEdges, opts.goalDeg);
-    // 分支种子：沿各自动边的山/谷符号方向施加偏置（平展奇异点的分岔选择）
+    // 分支种子：bias>0 请求“山折边主导”的离场分支，bias<0 请求“谷折边主导”。
+    // 请求方向上的折痕给强种子、其余给弱种子；求解器仍把结果限制回指派符号，
+    // 若该主导分支在当前固定角下不合法（如强制 M4 却要走 V 对），路径判不可行。
     const bias = opts.branchBias ?? 0;
-    const seed = target.autoEdges.map((e) =>
-      (g.creases[e].assignment === 'V' ? -1 : 1) * bias * 1.2,
-    );
+    const seed = target.autoEdges.map((e) => {
+      const isV = g.creases[e].assignment === 'V';
+      if (bias > 0) return isV ? bias * 0.05 : bias * 1.2;
+      if (bias < 0) return isV ? bias * 1.2 : bias * 0.05;
+      return 0;
+    });
     pinnedEdges.value = opts.fixedEdges.slice();
     pathRunning.value = true;
     pathStopReason.value = null;

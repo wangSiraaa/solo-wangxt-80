@@ -145,17 +145,32 @@ function dot(a: number[], b: number[]): number {
   return a.reduce((s, x, i) => s + x * b[i], 0);
 }
 
-/** 离场方向的稳定签名：按贡献最大的若干自动边方向离散化，与具体幅值无关。 */
+/** 离场方向的稳定签名：按贡献最大的若干自动边方向离散化，与具体幅值无关。
+ *  恒返回非空字符串（哪怕所有自动角都很小，也记录占优的折痕方向）。 */
 function directionSignature(graph: FoldGraph, edges: number[], x: number[]): string {
   const entries = x
     .map((v, i) => ({ e: edges[i], v, i }))
-    .filter((d) => Math.abs(d.v) > 0.05)
     .sort((a, b) => Math.abs(b.v) - Math.abs(a.v));
-  // 取贡献前 4 的折痕，记录折痕号与符号，构成稳定身份
-  return entries
-    .slice(0, 4)
+  const active = entries.filter((d) => Math.abs(d.v) > 0.02);
+  const chosen = active.length > 0 ? active.slice(0, 4) : entries.slice(0, 2);
+  return chosen
     .map((d) => `${graph.creases[d.e].assignment}${d.e}${d.v >= 0 ? '+' : '-'}`)
     .join('/');
+}
+
+/** 不可行分支（在该山/谷符号下没有平滑解）的身份：记录用户通过 seed 请求的离场方向。 */
+function requestedSignature(graph: FoldGraph, edges: number[], seed: number[]): string {
+  const entries = seed
+    .map((v, i) => ({ e: edges[i], v, i }))
+    .sort((a, b) => Math.abs(b.v) - Math.abs(a.v));
+  const active = entries.filter((d) => Math.abs(d.v) > 1e-9);
+  const chosen = active.length > 0 ? active.slice(0, 4) : entries.slice(0, 2);
+  return (
+    '不可行:' +
+    chosen
+      .map((d) => `${graph.creases[d.e].assignment}${d.e}${d.v >= 0 ? '+' : '-'}`)
+      .join('/')
+  );
 }
 
 /** 人类可读的离场描述。 */
@@ -184,6 +199,7 @@ function detectBranch(
   const auto = target.autoEdges;
   const SMOOTH_LIMIT = 0.22; // 离场步自动边最大约 12.6°，超出视为翻转/非连续支
   const signDir = auto.map((e) => (graph.creases[e].assignment === 'V' ? -1 : 1));
+  const seedActive = seed.some((v) => Math.abs(v) > 1e-9);
 
   // 候选初值：沿各折痕山/谷符号的小角度，外加单折痕主导方向与 seed
   const trials: number[][] = [];
@@ -232,15 +248,20 @@ function detectBranch(
     choices.push({ x, residual: geomRes, direction: unit(x.map(Math.abs)) });
   }
 
-  // 无平滑可行候选：返回角度范数最小的符号方向（交给外层判定不可行后停止）
-  // 无平滑可行候选：沿 seed 符号给一个极小离场值并标记不可行（主循环随后停止）
+  // 无平滑可行候选：标记不可行，身份记录用户通过 seed 请求的离场方向（非空）
   if (choices.length === 0) {
     const fallback = signDir.map((s, i) => s * (Math.abs(seed[i] ?? 0) > 1e-9 ? 0.02 : 0.001));
     return {
       x: fallback,
       direction: unit(fallback.map(Math.abs)),
-      signature: directionSignature(graph, auto, fallback),
-      description: describeSignature(graph, auto, fallback),
+      signature: requestedSignature(graph, auto, seedActive ? seed : fallback),
+      description: seedActive
+        ? auto
+            .map((e, i) => ({ e, a: graph.creases[e].assignment, v: seed[i] ?? 0 }))
+            .filter((d) => Math.abs(d.v) > 1e-9)
+            .sort((a, b) => Math.abs(b.v) - Math.abs(a.v))
+            .map((d) => `#${d.e}${d.a}请求`)
+        : describeSignature(graph, auto, fallback),
       feasible: false,
     };
   }
@@ -259,7 +280,6 @@ function detectBranch(
 
   // 选支：seed 非零 -> 只在与 seed 方向足够一致的簇中选择；
   // 若没有任何簇满足方向阈值，说明所请求的分支在该符号指派下不是平滑支，标记不可行。
-  const seedActive = seed.some((v) => Math.abs(v) > 1e-9);
   let picked: BranchChoice | null = null;
   if (seedActive) {
     // 自动角的可行符号已由山/谷边界固定，这里用 |seed| 的方向决定“哪些折痕先动”。
@@ -294,8 +314,14 @@ function detectBranch(
     return {
       x: fallback,
       direction: unit(fallback.map(Math.abs)),
-      signature: directionSignature(graph, auto, fallback),
-      description: describeSignature(graph, auto, fallback),
+      signature: requestedSignature(graph, auto, seedActive ? seed : fallback),
+      description: seedActive
+        ? auto
+            .map((e, i) => ({ e, a: graph.creases[e].assignment, v: seed[i] ?? 0 }))
+            .filter((d) => Math.abs(d.v) > 1e-9)
+            .sort((a, b) => Math.abs(b.v) - Math.abs(a.v))
+            .map((d) => `#${d.e}${d.a}请求`)
+        : describeSignature(graph, auto, fallback),
       feasible: false,
     };
   }

@@ -76,7 +76,7 @@ const smoothGraph = () => {
 
 // ---- 5. 过约束（同时固定多条折痕到不相容角度）：离开平展即停 ----
 {
-  const { graph } = loadFold(examples[3].fold);
+  const { graph } = loadFold(examples[4].fold);
   graph.creases.forEach((c) => (c.auto = false));
   // M4=60,V5=-60,M6=60 同时固定，V7 自动：不存在闭合解
   const target = buildTarget(graph, [4, 5, 6], { 4: 60, 5: 60, 6: 60 });
@@ -87,7 +87,7 @@ const smoothGraph = () => {
 
 // ---- 5b. 违反川崎的顶点仍可三维刚性折叠（川崎只约束扁平态）----
 {
-  const { graph } = loadFold(examples[3].fold);
+  const { graph } = loadFold(examples[4].fold);
   graph.creases.forEach((c) => (c.auto = false));
   const target = buildTarget(graph, [4], { 4: 90 });
   const p = await runContinuation(graph, target, { label: '三维刚性', maxSteps: 300, maxStepAngle: 0.12 });
